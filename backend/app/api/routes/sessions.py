@@ -175,7 +175,7 @@ async def analyze_session_risk(
 ):
     _validate_audio(file, session_id, db)
     from app.services import audio_service, asr_service, intent_service, action_context_service
-    from app.services import voice_integrity_service, risk_fusion_service, voice_profile_service
+    from app.services import voice_integrity_service, risk_fusion_service
     try:
         y, sr, _, filename = await audio_service.load_and_normalize_audio(file)
     except Exception as e:
@@ -183,12 +183,6 @@ async def analyze_session_risk(
 
     voice_result = voice_integrity_service.analyze_voice(y, sr)
 
-    speaker_result = None
-    if profile_id:
-        try:
-            speaker_result = voice_profile_service.compare_audio_to_profile(db, profile_id, y, sr)
-        except Exception:
-            pass  # Unknown caller – speaker component excluded from fusion
 
     asr_result = asr_service.transcribe_audio(y, sr)
     transcript = asr_result.get("transcript", "")
@@ -197,7 +191,6 @@ async def analyze_session_risk(
 
     risk_result = risk_fusion_service.calculate_risk(
         voice_analysis=voice_result,
-        speaker_analysis=speaker_result,
         intent_analysis=intent_result,
         action_context_analysis=action_context_result,
     )
@@ -217,7 +210,7 @@ async def evaluate_session_decision(
 ):
     _validate_audio(file, session_id, db)
     from app.services import audio_service, asr_service, intent_service, action_context_service
-    from app.services import voice_integrity_service, risk_fusion_service, voice_profile_service, policy_service
+    from app.services import voice_integrity_service, risk_fusion_service, policy_service
     try:
         y, sr, _, filename = await audio_service.load_and_normalize_audio(file)
     except Exception as e:
@@ -225,12 +218,6 @@ async def evaluate_session_decision(
 
     voice_result = voice_integrity_service.analyze_voice(y, sr)
 
-    speaker_result = None
-    if profile_id:
-        try:
-            speaker_result = voice_profile_service.compare_audio_to_profile(db, profile_id, y, sr)
-        except Exception:
-            pass
 
     asr_result = asr_service.transcribe_audio(y, sr)
     transcript = asr_result.get("transcript", "")
@@ -239,7 +226,6 @@ async def evaluate_session_decision(
 
     risk_result = risk_fusion_service.calculate_risk(
         voice_analysis=voice_result,
-        speaker_analysis=speaker_result,
         intent_analysis=intent_result,
         action_context_analysis=action_context_result,
     )
@@ -281,7 +267,7 @@ async def generate_session_evidence(
 ):
     _validate_audio(file, session_id, db)
     from app.services import audio_service, asr_service, intent_service, action_context_service
-    from app.services import voice_integrity_service, risk_fusion_service, voice_profile_service, policy_service
+    from app.services import voice_integrity_service, risk_fusion_service, policy_service
     try:
         y, sr, _, filename = await audio_service.load_and_normalize_audio(file)
     except Exception as e:
@@ -289,12 +275,6 @@ async def generate_session_evidence(
 
     voice_result = voice_integrity_service.analyze_voice(y, sr)
 
-    speaker_result = None
-    if profile_id:
-        try:
-            speaker_result = voice_profile_service.compare_audio_to_profile(db, profile_id, y, sr)
-        except Exception:
-            pass
 
     asr_result = asr_service.transcribe_audio(y, sr)
     transcript = asr_result.get("transcript", "")
@@ -303,7 +283,6 @@ async def generate_session_evidence(
 
     risk_result = risk_fusion_service.calculate_risk(
         voice_analysis=voice_result,
-        speaker_analysis=speaker_result,
         intent_analysis=intent_result,
         action_context_analysis=action_context_result,
     )
@@ -317,7 +296,7 @@ async def generate_session_evidence(
 
     analysis_data = {
         "voice_analysis": voice_result,
-        "speaker_analysis": speaker_result,
+        "speaker_analysis": None,
         "transcript": transcript,
         "intent": intent_result,
         "action_context": action_context_result,

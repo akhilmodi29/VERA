@@ -1,22 +1,23 @@
 import re
+import string
 
 def analyze_intent(transcript: str) -> dict:
-    """
-    Lightweight deterministic/rule-based detector for social engineering intents.
-    Returns a social_engineering_score (0.0 to 1.0), signals, category, and confidence.
-    """
     text = transcript.lower()
+    # Normalize punctuation and spaces for easier matching
+    normalized_text = re.sub(r'[^a-z0-9\s]', '', text)
     
     signals = []
     score = 0.0
     
     def check_keywords(keywords):
-        # Use word boundaries to prevent substring false positives (e.g., "fine" in "define")
-        pattern = re.compile(r'\b(' + '|'.join(map(re.escape, keywords)) + r')\b')
-        return bool(pattern.search(text))
+        for kw in keywords:
+            kw_norm = re.sub(r'[^a-z0-9\s]', '', kw.lower())
+            if re.search(r'\b' + re.escape(kw_norm) + r'\b', normalized_text):
+                return True
+        return False
     
     # 1. Urgency / Time Pressure
-    urgency_keywords = ["immediate", "urgent", "right now", "quickly", "before it's too late", "expires", "action required"]
+    urgency_keywords = ["immediate", "immediately", "urgent", "right now", "quickly", "before its too late", "expires", "action required"]
     if check_keywords(urgency_keywords):
         signals.append("urgency")
         score += 0.3
@@ -28,25 +29,25 @@ def analyze_intent(transcript: str) -> dict:
         score += 0.4
         
     # 3. Requests for OTP/Password/PIN/Sensitive Info
-    auth_keywords = ["otp", "password", "pin", "verification code", "social security", "one time password", "access code"]
+    auth_keywords = ["otp", "o t p", "password", "pin", "p i n", "verification code", "social security", "one time password", "access code"]
     if check_keywords(auth_keywords):
         signals.append("request_auth_code")
         score += 0.6
         
     # 4. Requests for Money/Payment
-    payment_keywords = ["wire transfer", "gift card", "crypto", "bitcoin", "pay now", "send money", "western union", "bank details"]
+    payment_keywords = ["wire transfer", "transfer money", "transfer the money", "gift card", "crypto", "bitcoin", "pay now", "send money", "western union", "bank details", "account", "this account"]
     if check_keywords(payment_keywords):
         signals.append("request_payment")
         score += 0.5
         
     # 5. Impersonation Claims
-    impersonation_keywords = ["irs", "tax agency", "tech support", "microsoft support", "bank fraud department", "fbi", "government"]
+    impersonation_keywords = ["irs", "tax agency", "tech support", "microsoft support", "bank fraud department", "fbi", "government", "security alert"]
     if check_keywords(impersonation_keywords):
         signals.append("impersonation_claim")
         score += 0.3
         
     # 6. Secrecy / Isolation Requests
-    secrecy_keywords = ["don't tell anyone", "keep this private", "secret", "stay on the line", "do not hang up"]
+    secrecy_keywords = ["dont tell anyone", "do not tell anyone", "keep this private", "secret", "stay on the line", "do not hang up", "dont hang up"]
     if check_keywords(secrecy_keywords):
         signals.append("secrecy_isolation")
         score += 0.3
@@ -57,10 +58,8 @@ def analyze_intent(transcript: str) -> dict:
         signals.append("suspicious_action")
         score += 0.4
 
-    # Cap score at 1.0
     final_score = min(1.0, score)
     
-    # Determine Category
     if final_score >= 0.7:
         category = "high_risk_scam"
     elif final_score >= 0.4:
@@ -70,7 +69,6 @@ def analyze_intent(transcript: str) -> dict:
     else:
         category = "benign"
         
-    # Mock confidence based on how many signals triggered
     confidence = min(1.0, 0.5 + (len(signals) * 0.1)) if signals else 0.9
     
     return {

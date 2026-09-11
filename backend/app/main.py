@@ -23,13 +23,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"  [FAIL] voice_integrity model could not load: {e}")
         raise RuntimeError(f"Startup failed: voice_integrity model error: {e}") from e
 
-    try:
-        from app.services.speaker_verification_service import get_model as sv_get
-        sv_get()
-        logger.info("  [OK] speaker_verification  anton-l/wav2vec2-base-superb-sv")
-    except Exception as e:
-        logger.error(f"  [FAIL] speaker_verification model could not load: {e}")
-        raise RuntimeError(f"Startup failed: speaker_verification model error: {e}") from e
+
 
     try:
         from app.services.asr_service import get_model as asr_get

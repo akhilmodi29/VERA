@@ -1,4 +1,6 @@
 import logging
+import base64
+import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -12,12 +14,15 @@ from app.services import asr_service
 from app.services import intent_service
 from app.services import action_context_service
 from app.services import risk_fusion_service
-from app.services import voice_profile_service
 from app.services import policy_service
 
 logger = logging.getLogger("vera.websocket")
 
 router = APIRouter()
+
+def get_risk_weight(risk_level: str) -> int:
+    mapping = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+    return mapping.get(risk_level.lower(), 0) if risk_level else 0
 
 @router.websocket("/api/v1/ws/sessions/{session_id}")
 async def websocket_endpoint(
@@ -26,39 +31,6 @@ async def websocket_endpoint(
     profile_id: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """
-    VERA Real-Time Audio Analysis WebSocket.
-
-    Audio Protocol
-    --------------
-    Clients MUST stream audio as complete, self-contained WAV chunks:
-      - Format:      WAV (RIFF), 16-bit PCM
-      - Sample rate: 16 000 Hz
-      - Channels:    Mono (1 channel)
-      - Chunk size:  Aim for 2–4 seconds per chunk (~64 KB–128 KB uncompressed).
-
-    The server accumulates binary data until the internal buffer exceeds 100 000 bytes
-    (~3 seconds of 16 kHz 16-bit mono), then decodes, analyses, and pushes a JSON
-    result back through the same connection.
-
-    Each JSON response contains:
-      session_id, transcript, voice_integrity_score, speaker_similarity_score,
-      overall_risk_score, risk_level, decision, signals
-
-    On error (e.g., malformed chunk), the server sends {"error": "<reason>"} and
-    continues listening — the connection is NOT closed.
-
-    Query Parameters
-    ----------------
-    profile_id (optional): UUID of a trusted voice profile for speaker verification.
-                           Omit for unknown/first-time callers.
-
-    Close Codes
-    -----------
-    1008 – Session not found (connection rejected before accept).
-    """
-
-    # Verify session
     db_session = session_service.get_session(db=db, session_id=session_id)
     if db_session is None:
         await websocket.close(code=1008, reason="Session not found")
@@ -67,78 +39,123 @@ async def websocket_endpoint(
     await websocket.accept()
     
     buffer = bytearray()
-    
-    # 2-4 seconds at 16kHz 16-bit mono is ~64KB - 128KB
-    # We'll use a ~100KB threshold to trigger processing
     PROCESS_THRESHOLD = 100000 
     
+    processed_chunk_ids = set()
+    current_max_risk = db_session.risk_level or "low"
+    
+    async def process_audio_payload(audio_bytes: bytes, chunk_id: Optional[int] = None):
+        nonlocal current_max_risk
+        temp_audio_path = None
+        try:
+            if not audio_bytes or len(audio_bytes) < 4000:
+                raise ValueError("Audio chunk is empty or too short")
+                
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
+                temp_audio.write(audio_bytes)
+                temp_audio_path = temp_audio.name
+            
+            try:
+                y, sr = librosa.load(temp_audio_path, sr=16000, mono=True)
+            except Exception as e:
+                raise ValueError(f"Invalid WAV or audio format: {str(e)}")
+            
+            voice_result = voice_integrity_service.analyze_voice(y, sr)
+            asr_result = asr_service.transcribe_audio(y, sr)
+            transcript = asr_result.get("transcript", "")
+            intent_result = intent_service.analyze_intent(transcript)
+            action_context_result = action_context_service.analyze_action_context(transcript, intent_result)
+            
+            risk_result = risk_fusion_service.calculate_risk(
+                voice_analysis=voice_result,
+                intent_analysis=intent_result,
+                action_context_analysis=action_context_result
+            )
+            
+            chunk_risk = risk_result.get("risk_level", "low")
+            if get_risk_weight(chunk_risk) > get_risk_weight(current_max_risk):
+                current_max_risk = chunk_risk
+                
+            reported_risk_level = current_max_risk
+            
+            modified_risk_result = dict(risk_result)
+            modified_risk_result["risk_level"] = reported_risk_level
+            
+            policy_result = policy_service.evaluate_policy(modified_risk_result, action_context_result)
+            
+            session_service.update_session(db, session_id, {
+                "risk_level": reported_risk_level,
+                "decision": policy_result.get("decision")
+            })
+            
+            response = {
+                "session_id": session_id,
+                "transcript": transcript,
+                "voice_integrity_score": voice_result.get("voice_integrity_score"),
+                "speaker_similarity_score": None,
+                "overall_risk_score": risk_result.get("overall_risk_score"),
+                "risk_level": reported_risk_level,
+                "decision": policy_result.get("decision"),
+                "signals": risk_result.get("contributing_signals", [])
+            }
+            if chunk_id is not None:
+                response["chunk_id"] = chunk_id
+                
+            await websocket.send_json(response)
+            
+        except Exception as e:
+            err_msg = str(e)
+            resp = {"error": f"Audio parsing or processing failed: {err_msg}", "session_id": session_id}
+            if chunk_id is not None:
+                resp["chunk_id"] = chunk_id
+            await websocket.send_json(resp)
+        finally:
+            if temp_audio_path and os.path.exists(temp_audio_path):
+                os.remove(temp_audio_path)
+
     try:
         while True:
-            data = await websocket.receive_bytes()
-            buffer.extend(data)
-            
-            if len(buffer) >= PROCESS_THRESHOLD:
-                # Process buffer
-                temp_audio_path = None
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+                
+            if "text" in message and message["text"]:
                 try:
-                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio:
-                        temp_audio.write(buffer)
-                        temp_audio_path = temp_audio.name
+                    data = json.loads(message["text"])
+                    chunk_id = data.get("chunk_id")
                     
-                    # Clear buffer after writing so memory is freed
-                    buffer.clear()
-                    
-                    # Catch librosa parsing issues on malformed binary
-                    y, sr = librosa.load(temp_audio_path, sr=16000, mono=True)
-                    
-                    # Run Pipeline
-                    voice_result = voice_integrity_service.analyze_voice(y, sr)
-                    
-                    speaker_result = None
-                    if profile_id:
-                        try:
-                            speaker_result = voice_profile_service.compare_audio_to_profile(db, profile_id, y, sr)
-                        except Exception:
-                            pass
-                            
-                    asr_result = asr_service.transcribe_audio(y, sr)
-                    transcript = asr_result.get("transcript", "")
-                    
-                    intent_result = intent_service.analyze_intent(transcript)
-                    action_context_result = action_context_service.analyze_action_context(transcript, intent_result)
-                    
-                    risk_result = risk_fusion_service.calculate_risk(
-                        voice_analysis=voice_result,
-                        speaker_analysis=speaker_result,
-                        intent_analysis=intent_result,
-                        action_context_analysis=action_context_result
-                    )
-                    
-                    policy_result = policy_service.evaluate_policy(risk_result, action_context_result)
-                    
-                    session_service.update_session(db, session_id, {
-                        "risk_level": risk_result.get("risk_level"),
-                        "decision": policy_result.get("decision")
-                    })
-                    
-                    await websocket.send_json({
-                        "session_id": session_id,
-                        "transcript": transcript,
-                        "voice_integrity_score": voice_result.get("voice_integrity_score"),
-                        "speaker_similarity_score": speaker_result.get("speaker_similarity_score") if speaker_result else None,
-                        "overall_risk_score": risk_result.get("overall_risk_score"),
-                        "risk_level": risk_result.get("risk_level"),
-                        "decision": policy_result.get("decision"),
-                        "signals": risk_result.get("contributing_signals", [])
-                    })
-                    
-                except Exception as e:
-                    # Ignore unparseable chunks and wait for more valid data
-                    buffer.clear()
-                    await websocket.send_json({"error": f"Audio parsing or processing failed: {str(e)}"})
-                finally:
-                    if temp_audio_path and os.path.exists(temp_audio_path):
-                        os.remove(temp_audio_path)
+                    if chunk_id is None:
+                        await websocket.send_json({"error": "Missing chunk_id in JSON payload", "session_id": session_id})
+                        continue
                         
+                    if chunk_id in processed_chunk_ids:
+                        await websocket.send_json({"error": "Duplicate chunk_id", "session_id": session_id, "chunk_id": chunk_id})
+                        continue
+                        
+                    processed_chunk_ids.add(chunk_id)
+                    
+                    audio_b64 = data.get("audio_data")
+                    if not audio_b64:
+                        await websocket.send_json({"error": "Missing audio_data in JSON payload", "session_id": session_id, "chunk_id": chunk_id})
+                        continue
+                        
+                    try:
+                        audio_bytes = base64.b64decode(audio_b64)
+                    except Exception:
+                        await websocket.send_json({"error": "Invalid base64 encoding for audio_data", "session_id": session_id, "chunk_id": chunk_id})
+                        continue
+                        
+                    await process_audio_payload(audio_bytes, chunk_id=chunk_id)
+                    
+                except json.JSONDecodeError:
+                    await websocket.send_json({"error": "Malformed JSON payload", "session_id": session_id})
+                    
+            elif "bytes" in message and message["bytes"]:
+                buffer.extend(message["bytes"])
+                if len(buffer) >= PROCESS_THRESHOLD:
+                    audio_bytes = bytes(buffer)
+                    buffer.clear()
+                    await process_audio_payload(audio_bytes)
+                    
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected for session %s", session_id)

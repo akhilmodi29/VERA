@@ -5,7 +5,6 @@ import {
   Activity, 
   MessageSquareWarning, 
   AlertOctagon,
-  Clock,
   Loader2,
   Radio,
   FileAudio,
@@ -13,15 +12,12 @@ import {
   Fingerprint,
   ShieldAlert,
   AlertTriangle,
-  Info,
-  Users,
   CheckCircle2
-} from 'lucide-react';
+, Users, } from 'lucide-react';
 import { api, type SessionResponse, type EvidenceResponse } from '../services/api';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
 import { useLiveDetection } from '../hooks/useLiveDetection';
 
-// ── Batch analysis result shape stored in state ───────────────────────────
 interface BatchRiskResult {
   overall_risk_score: number;
   risk_level: string;
@@ -39,7 +35,6 @@ interface BatchDecisionResult {
   escalated?: boolean;
 }
 
-// ── Processing stage labels ───────────────────────────────────────────────
 type AnalysisStage =
   | 'idle'
   | 'decoding'
@@ -50,38 +45,38 @@ type AnalysisStage =
   | 'done'
   | 'error';
 
-const STAGE_LABELS: Record<AnalysisStage, string> = {
-  idle: '',
-  decoding: 'Decoding audio…',
-  voice: 'Analyzing voice integrity…',
-  speech: 'Transcribing speech…',
-  risk: 'Calculating risk score…',
-  policy: 'Evaluating policy…',
-  done: 'Analysis complete.',
-  error: 'Analysis failed.',
-};
+// const STAGE_LABELS: Record<AnalysisStage, string> = {
+  // idle: '',
+  // decoding: 'Decoding audio...',
+  // voice: 'Analyzing voice integrity...',
+  // speech: 'Transcribing speech...',
+  // risk: 'Calculating risk score...',
+  // policy: 'Evaluating policy...',
+  // done: 'Analysis complete.',
+  // error: 'Analysis failed.',
+// };
 
-// ── Component ─────────────────────────────────────────────────────────────
 const Dashboard: React.FC = () => {
+  
   const [activeSession, setActiveSession] = useState<SessionResponse | null>(null);
   const [isInitializing, setIsInitializing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [detectionMode, setDetectionMode] = useState<'batch' | 'live'>('batch');
+  const [detectionMode, setDetectionMode] = useState<'batch' | 'Live'>('batch');
 
-  // Batch result state — stored separately so partial results can be shown
   const [analysisStage, setAnalysisStage] = useState<AnalysisStage>('idle');
+  console.log(analysisStage);
   const [batchRisk, setBatchRisk] = useState<BatchRiskResult | null>(null);
   const [batchDecision, setBatchDecision] = useState<BatchDecisionResult | null>(null);
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const [evidenceData, setEvidenceData] = useState<EvidenceResponse['data'] | null>(null);
 
   const {
-    isRecording,
-    recordingTime,
-    audioBlob,
+    /* isRecording, */
+    /* recordingTime, */
+    /* audioBlob, */
     error: recorderError,
-    startRecording,
-    stopRecording,
+    /* startRecording, */
+    /* stopRecording, */
     clearRecording,
   } = useAudioRecorder();
 
@@ -92,16 +87,10 @@ const Dashboard: React.FC = () => {
     error: liveError,
     startLiveDetection,
     stopLiveDetection,
-    getLiveSessionBlob,
   } = useLiveDetection();
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
+  /* formatTime */
 
-  // ── Session management ──────────────────────────────────────────────────
   const handleStartSession = async () => {
     setIsInitializing(true);
     setError(null);
@@ -122,44 +111,35 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // ── Batch Analysis — sequential, with partial result display ─────────────
-  const handleRunAnalysis = async () => {
-    if (!activeSession || !audioBlob) return;
-
-    // Reset prior results
+    const handleRunAnalysis = async (blob: Blob) => {
+    if (!activeSession) return;
     setBatchRisk(null);
     setBatchDecision(null);
     setDecisionError(null);
     setEvidenceData(null);
     setError(null);
-
     setAnalysisStage('decoding');
-
     try {
-      // ── Step 1: Risk (contains voice integrity + transcript + risk score) ──
       setAnalysisStage('voice');
       let riskRes;
       try {
-        riskRes = await api.analyzeRisk(activeSession.session_id, audioBlob);
+        riskRes = await api.analyzeRisk(activeSession.session_id, blob);
       } catch (riskErr) {
         setError(riskErr instanceof Error ? riskErr.message : 'Risk analysis failed.');
         setAnalysisStage('error');
         return;
       }
-
-      // Extract every useful field from the risk response
       const ra = riskRes.data.risk_analysis as {
         overall_risk_score: number;
         risk_level: string;
         contributing_signals: string[];
         confidence?: number;
-        // These are nested inside risk_analysis if the backend passes them through
         voice_integrity_score?: number;
         voice_label?: string;
         voice_confidence?: number;
         speaker_similarity_score?: number | null;
       };
-      const extractedRisk: BatchRiskResult = {
+      const extractedRisk = {
         overall_risk_score: ra.overall_risk_score,
         risk_level: ra.risk_level,
         contributing_signals: ra.contributing_signals ?? [],
@@ -170,692 +150,540 @@ const Dashboard: React.FC = () => {
         speaker_similarity_score: ra.speaker_similarity_score ?? null,
         transcript: riskRes.data.transcript ?? '',
       };
-
-      // Immediately show risk — user sees partial results right now
       setBatchRisk(extractedRisk);
       setAnalysisStage('policy');
-
-      // ── Step 2: Decision (uses same audio) ──────────────────────────────
       try {
-        const decisionRes = await api.getDecision(activeSession.session_id, audioBlob);
+        const decisionRes = await api.getDecision(activeSession.session_id, blob);
         setBatchDecision(decisionRes.data.policy);
       } catch (decErr) {
-        // Risk succeeded — preserve it. Show decision-specific error.
-        setDecisionError(
-          decErr instanceof Error ? decErr.message : 'Policy decision unavailable.'
-        );
+        setDecisionError(decErr instanceof Error ? decErr.message : 'Policy decision unavailable.');
       }
-
-      // ── Step 3: Evidence (best-effort, silent failure OK) ───────────────
       try {
-        const evidenceRes = await api.generateEvidence(activeSession.session_id, audioBlob);
+        const evidenceRes = await api.generateEvidence(activeSession.session_id, blob);
         if (evidenceRes?.data) setEvidenceData(evidenceRes.data);
-      } catch {
-        // Evidence failure is non-fatal — batch flow still succeeds
-      }
-
+      } catch {}
       setAnalysisStage('done');
     } catch (unexpectedErr) {
-      setError(
-        unexpectedErr instanceof Error ? unexpectedErr.message : 'Unexpected analysis error.'
-      );
+      setError(unexpectedErr instanceof Error ? unexpectedErr.message : 'Unexpected analysis error.');
       setAnalysisStage('error');
     }
   };
 
-  // ── Live evidence ────────────────────────────────────────────────────────
-  const handleGenerateLiveEvidence = async () => {
-    if (!activeSession) return;
-    const blob = getLiveSessionBlob();
-    if (!blob) {
-      setError('No audio recorded yet in Live mode.');
-      return;
-    }
-    setAnalysisStage('voice');
-    try {
-      const evidenceRes = await api.generateEvidence(activeSession.session_id, blob);
-      setEvidenceData(evidenceRes.data);
-      setAnalysisStage('done');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Evidence generation failed');
-      setAnalysisStage('error');
-    }
-  };
-
-  // ── End session ──────────────────────────────────────────────────────────
-  const handleEndSession = () => {
-    if (isRecording) stopRecording();
-    if (connectionState !== 'Disconnected') stopLiveDetection();
-    setActiveSession(null);
-    setBatchRisk(null);
-    setBatchDecision(null);
-    setDecisionError(null);
-    setEvidenceData(null);
-    setError(null);
-    setAnalysisStage('idle');
-    clearRecording();
-  };
-
-  // ── Derived display values ────────────────────────────────────────────────
   const displayRiskData =
-    detectionMode === 'live' && telemetry
+    detectionMode === 'Live' && telemetry
       ? {
           overall_risk_score: telemetry.overall_risk_score,
           risk_level: telemetry.risk_level ?? 'unavailable',
           contributing_signals: telemetry.signals ?? [],
+          transcript: telemetry.transcript,
+          voice_integrity_score: telemetry.voice_integrity_score,
         }
       : batchRisk
       ? {
           overall_risk_score: batchRisk.overall_risk_score,
           risk_level: batchRisk.risk_level,
           contributing_signals: batchRisk.contributing_signals,
+          transcript: batchRisk.transcript,
+          voice_integrity_score: batchRisk.voice_integrity_score,
         }
       : null;
 
   const displayDecisionData =
-    detectionMode === 'live' && telemetry
+    detectionMode === 'Live' && telemetry
       ? { decision: telemetry.decision ?? 'unavailable' }
       : batchDecision;
 
-  const isProcessing =
-    analysisStage !== 'idle' && analysisStage !== 'done' && analysisStage !== 'error';
+  /* isProcessing */
 
-  const activeError = error || recorderError || liveError;
-  const isMicActive =
-    isRecording ||
-    connectionState === 'Connecting' ||
-    connectionState === 'Live' ||
-    connectionState === 'Processing';
+  /* isMicActive */
 
-  // ── Derived voice integrity display ──────────────────────────────────────
-  const voiceIntegrityDisplay = (() => {
-    if (detectionMode === 'live') {
-      if (telemetry?.voice_integrity_score != null)
-        return `${(telemetry.voice_integrity_score * 100).toFixed(1)}%`;
-      return 'Unavailable';
-    }
-    if (batchRisk?.voice_integrity_score != null)
-      return `${(batchRisk.voice_integrity_score * 100).toFixed(1)}%`;
-    if (batchRisk) return 'Analyzed'; // score not exposed in this version of the endpoint
-    return 'Unavailable';
-  })();
-
-  const voiceLabelDisplay = (() => {
-    if (detectionMode === 'live') return null;
-    if (batchRisk?.voice_label) return batchRisk.voice_label;
-    return null;
-  })();
-
-  const speakerDisplay = (() => {
-    if (detectionMode === 'live') {
-      if (telemetry?.speaker_similarity_score != null)
-        return `${(telemetry.speaker_similarity_score * 100).toFixed(1)}%`;
-      return 'Unavailable';
-    }
-    if (batchRisk?.speaker_similarity_score != null)
-      return `${(batchRisk.speaker_similarity_score * 100).toFixed(1)}%`;
-    return 'Unavailable';
-  })();
-
-  const transcriptDisplay = (() => {
-    if (detectionMode === 'live') {
-      return telemetry?.transcript ?? null;
-    }
-    return batchRisk?.transcript ?? null;
-  })();
-
-  // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-6 max-w-[1400px] mx-auto pb-12">
-
-      {/* 1. SESSION CONTROL HEADER */}
-      <div className="bg-vera-panel border border-vera-border rounded-xl shadow-lg p-5 flex flex-col md:flex-row items-center justify-between gap-4">
+    <div className="flex flex-col h-full bg-[#070b14] text-gray-200">
+      
+      {/* Top Header */}
+      <header className="flex items-center justify-between px-6 py-4 border-b border-[#1a2333] bg-[#0a101d]">
         <div className="flex items-center space-x-4">
-          <div
-            className={`w-12 h-12 rounded-full flex items-center justify-center ${
-              isMicActive
-                ? 'bg-vera-danger/20 text-vera-danger border border-vera-danger/30 animate-pulse'
-                : isProcessing
-                ? 'bg-vera-accent/20 text-vera-accent border border-vera-accent/30 animate-pulse'
-                : activeSession
-                ? 'bg-vera-success/20 text-vera-success border border-vera-success/30'
-                : 'bg-vera-border text-vera-textMuted'
-            }`}
-          >
-            {isProcessing ? <Loader2 size={24} className="animate-spin" /> : <Mic size={24} />}
+          <div className="bg-blue-600 p-2 rounded-lg shadow-[0_0_15px_rgba(37,99,235,0.5)]">
+            <ShieldCheck className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-vera-text tracking-wide">
-              {isProcessing
-                ? 'ANALYZING…'
-                : activeSession
-                ? 'LIVE MONITORING'
-                : 'READY TO MONITOR'}
-            </h2>
-            <div className="flex flex-col text-sm text-vera-textMuted">
-              {activeSession ? (
-                <>
-                  <span>Session: {activeSession.session_id}</span>
-                  <span
-                    className={`mt-0.5 text-xs ${
-                      isProcessing ? 'text-vera-accent' : 'text-vera-success'
-                    }`}
-                  >
-                    {isProcessing ? STAGE_LABELS[analysisStage] : 'Status: Active'}
-                  </span>
-                </>
-              ) : (
-                <span>No active session</span>
-              )}
-            </div>
+            <h1 className="text-xl font-bold tracking-wide text-white">VERA</h1>
+            <p className="text-[10px] text-gray-400 uppercase tracking-widest">Voice Evidence & Risk Authentication</p>
+          </div>
+          <div className="hidden md:flex items-center space-x-2 ml-4">
+            <span className="px-2 py-0.5 bg-[#121d30] text-blue-400 text-[10px] font-mono rounded border border-blue-900">v2.0</span>
+            <span className="px-2 py-0.5 bg-blue-900/30 text-blue-400 text-[10px] font-mono rounded border border-blue-800/50">SIH 2026</span>
           </div>
         </div>
-
-        <div className="flex items-center space-x-3 w-full md:w-auto">
-          {activeError && (
-            <div className="text-vera-danger text-sm max-w-sm mr-4 flex items-center">
-              <AlertTriangle size={14} className="mr-1.5 flex-shrink-0" />
-              <span className="line-clamp-2">{activeError}</span>
+        
+        <div className="flex items-center space-x-4">
+          <div className="flex items-center px-3 py-1.5 bg-[#0d1627] rounded-lg border border-[#1a2333]">
+            <div className="w-2 h-2 rounded-full bg-emerald-500 mr-2 shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>
+            <div className="flex flex-col">
+              <span className="text-xs font-semibold text-emerald-400">System Online</span>
+              <span className="text-[9px] text-gray-500">Backend Connected</span>
             </div>
-          )}
+          </div>
+          
+          <div className="flex items-center px-3 py-1.5 bg-[#0d1627] rounded-lg border border-[#1a2333]">
+            <ShieldAlert className="w-4 h-4 text-gray-400 mr-2" />
+            <div className="flex flex-col">
+              <span className="text-[9px] text-gray-500 uppercase">Session ID</span>
+              <span className="text-xs font-mono text-gray-300">{activeSession ? activeSession.session_id.split('-')[0] + '...' : 'NONE'}</span>
+            </div>
+            <FileText className="w-3 h-3 text-gray-500 ml-3 cursor-pointer hover:text-gray-300" />
+          </div>
+          
+          <div className="flex items-center px-4 py-2 bg-[#0d1627] rounded-lg border border-[#1a2333]">
+            <Radio className={`w-4 h-4 mr-2 ${connectionState === 'Live' ? 'text-blue-500 animate-pulse' : 'text-gray-500'}`} />
+            <span className="text-xs font-semibold">{connectionState}</span>
+          </div>
+        </div>
+      </header>
 
-          {!activeSession ? (
-            <button
-              onClick={handleStartSession}
-              disabled={isInitializing}
-              className="px-6 py-2 bg-vera-accent hover:bg-blue-600 disabled:opacity-50 text-white rounded-lg font-medium transition-colors shadow-lg flex items-center"
-            >
-              {isInitializing && <Loader2 className="animate-spin mr-2" size={16} />}
-              {isInitializing ? 'Initializing…' : 'Initialize Session'}
-            </button>
-          ) : (
-            <div className="flex items-center space-x-3">
-              {/* Mode toggle — only when idle */}
-              {!isMicActive && !audioBlob && !isProcessing && (
-                <div className="flex bg-vera-dark p-1 rounded-lg border border-vera-border">
-                  <button
-                    onClick={() => setDetectionMode('batch')}
-                    className={`px-3 py-1.5 rounded text-sm font-medium transition-colors flex items-center ${
-                      detectionMode === 'batch' ? 'bg-vera-accent text-white' : 'text-vera-textMuted hover:text-white'
-                    }`}
-                  >
-                    <FileAudio size={14} className="mr-1.5" /> Batch
-                  </button>
-                  <button
-                    onClick={() => setDetectionMode('live')}
-                    className={`px-3 py-1.5 rounded text-sm font-medium transition-colors flex items-center ${
-                      detectionMode === 'live' ? 'bg-vera-success text-white' : 'text-vera-textMuted hover:text-white'
-                    }`}
-                  >
-                    <Radio size={14} className="mr-1.5" /> Stream
-                  </button>
-                </div>
-              )}
-
-              {/* BATCH CONTROLS */}
-              {detectionMode === 'batch' && (
-                <div className="flex items-center space-x-2">
-                  {!audioBlob && !isRecording && !isProcessing && (
-                    <button
-                      onClick={startRecording}
-                      className="px-4 py-2 bg-vera-danger/20 hover:bg-vera-danger/30 text-vera-danger border border-vera-danger/50 rounded-lg font-medium flex items-center transition-colors"
-                    >
-                      <Mic className="mr-2" size={16} /> Record
-                    </button>
-                  )}
-                  {isRecording && (
-                    <div className="flex items-center space-x-2">
-                      <span className="font-mono text-vera-danger bg-vera-danger/10 px-3 py-2 rounded-lg border border-vera-danger/30 flex items-center">
-                        <div className="w-2 h-2 rounded-full bg-vera-danger animate-pulse mr-2" />
-                        {formatTime(recordingTime)}
-                      </span>
-                      <button
-                        onClick={stopRecording}
-                        className="px-4 py-2 bg-vera-border hover:bg-vera-danger hover:text-white border border-vera-border hover:border-vera-danger rounded-lg transition-colors"
-                      >
-                        Stop
-                      </button>
-                    </div>
-                  )}
-                  {audioBlob && !isProcessing && (
-                    <>
-                      <button
-                        onClick={handleRunAnalysis}
-                        className="px-4 py-2 bg-vera-accent hover:bg-blue-600 text-white rounded-lg font-medium transition-colors"
-                      >
-                        {batchRisk ? 'Re-analyze' : 'Run Analysis'}
-                      </button>
-                      <button
-                        onClick={() => { clearRecording(); setBatchRisk(null); setBatchDecision(null); setDecisionError(null); setEvidenceData(null); setAnalysisStage('idle'); }}
-                        className="px-4 py-2 bg-vera-border hover:bg-gray-700 text-gray-300 rounded-lg transition-colors"
-                      >
-                        Clear
-                      </button>
-                    </>
-                  )}
-                  {isProcessing && (
-                    <div className="text-vera-accent flex items-center px-4 font-medium text-sm">
-                      <Loader2 className="animate-spin mr-2" size={16} />
-                      {STAGE_LABELS[analysisStage]}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* LIVE CONTROLS */}
-              {detectionMode === 'live' && (
-                <div className="flex items-center space-x-2">
-                  {connectionState === 'Disconnected' && (
-                    <>
-                      <button
-                        onClick={() => startLiveDetection(activeSession.session_id)}
-                        className="px-4 py-2 bg-vera-success hover:bg-emerald-600 text-white rounded-lg font-medium flex items-center transition-colors"
-                      >
-                        <Radio className="mr-2" size={16} /> Connect Live WebSocket
-                      </button>
-                      {telemetryHistory.length > 0 && !evidenceData && (
-                        <button
-                          onClick={handleGenerateLiveEvidence}
-                          disabled={isProcessing}
-                          className="px-4 py-2 bg-purple-500 hover:bg-purple-600 disabled:opacity-50 text-white rounded-lg font-medium flex items-center transition-colors"
-                        >
-                          {isProcessing ? (
-                            <Loader2 className="animate-spin mr-2" size={16} />
-                          ) : (
-                            <FileText className="mr-2" size={16} />
-                          )}
-                          Generate Final Evidence
-                        </button>
-                      )}
-                    </>
-                  )}
-                  {(connectionState === 'Connecting' ||
-                    connectionState === 'Live' ||
-                    connectionState === 'Processing') && (
-                    <div className="flex items-center space-x-2">
-                      <span className="font-mono text-vera-success bg-vera-success/10 px-3 py-2 rounded-lg border border-vera-success/30 flex items-center text-sm">
-                        <div className="w-2 h-2 rounded-full bg-vera-success animate-pulse mr-2" />
-                        {connectionState}
-                      </span>
-                      <button
-                        onClick={stopLiveDetection}
-                        className="px-4 py-2 bg-vera-border hover:bg-vera-success hover:text-white border border-vera-border hover:border-vera-success rounded-lg transition-colors"
-                      >
-                        Disconnect
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="w-px h-8 bg-vera-border mx-2" />
-              <button
-                onClick={handleEndSession}
-                className="text-sm text-vera-textMuted hover:text-vera-danger transition-colors underline-offset-4 hover:underline"
+      {/* Main Content Area */}
+      <div className="p-6 overflow-y-auto flex-1">
+        
+        {/* Welcome & Controls */}
+        <div className="flex items-end justify-between mb-6">
+          <div>
+            <h2 className="text-2xl font-semibold text-white mb-1">Welcome back, Akhil</h2>
+            <p className="text-sm text-gray-400">Real-time voice analysis for a safer digital world.</p>
+          </div>
+          
+          <div className="flex items-center space-x-3">
+            {!activeSession ? (
+              <button 
+                onClick={handleStartSession}
+                disabled={isInitializing}
+                className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-lg shadow-[0_0_15px_rgba(37,99,235,0.4)] transition-all flex items-center"
               >
-                End Session
+                {isInitializing ? <Loader2 size={16} className="animate-spin mr-2" /> : <ShieldCheck size={16} className="mr-2" />}
+                Initialize Session
               </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* 2. MAIN ANALYSIS GRID */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-        {/* LEFT COLUMN: Voice Integrity, Speaker Consistency, Transcript */}
-        <div className="lg:col-span-2 space-y-6">
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-
-            {/* VOICE INTEGRITY */}
-            <div className="bg-vera-panel border border-vera-border rounded-xl p-6 shadow-md relative overflow-hidden group">
-              <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                <ShieldCheck size={64} className="text-vera-accent" />
-              </div>
-              <h3 className="text-sm font-semibold text-vera-textMuted uppercase tracking-wider mb-4 flex items-center">
-                <Activity size={16} className="mr-2 text-vera-accent" /> Voice Integrity
-              </h3>
-              <div className="flex items-baseline space-x-3 mb-1">
-                <span className="text-4xl font-bold text-vera-text">
-                  {isProcessing && analysisStage === 'voice' ? (
-                    <Loader2 size={32} className="animate-spin text-vera-accent" />
-                  ) : (
-                    voiceIntegrityDisplay
-                  )}
-                </span>
-                {voiceLabelDisplay && (
-                  <span
-                    className={`text-xs font-bold uppercase px-2 py-0.5 rounded ${
-                      voiceLabelDisplay === 'genuine'
-                        ? 'text-vera-success bg-vera-success/10 border border-vera-success/20'
-                        : 'text-vera-danger bg-vera-danger/10 border border-vera-danger/20'
-                    }`}
-                  >
-                    {voiceLabelDisplay}
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-gray-500 mt-2">Deepfake / AI synthesis detection</p>
-            </div>
-
-            {/* SPEAKER CONSISTENCY */}
-            <div className="bg-vera-panel border border-vera-border rounded-xl p-6 shadow-md relative overflow-hidden group">
-              <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-                <Fingerprint size={64} className="text-vera-accent" />
-              </div>
-              <h3 className="text-sm font-semibold text-vera-textMuted uppercase tracking-wider mb-4 flex items-center">
-                <Users size={16} className="mr-2 text-vera-accent" /> Speaker Consistency
-              </h3>
-              <div className="flex items-end space-x-3 mb-1">
-                <span className="text-4xl font-bold text-vera-text">{speakerDisplay}</span>
-              </div>
-              <p className="text-xs text-gray-500 mt-2">Trusted voice profile matching</p>
-            </div>
-          </div>
-
-          {/* TRANSCRIPT */}
-          <div className="bg-vera-panel border border-vera-border rounded-xl p-6 shadow-md flex flex-col min-h-[200px]">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-vera-textMuted uppercase tracking-wider flex items-center">
-                <MessageSquareWarning size={16} className="mr-2 text-vera-accent" />
-                {detectionMode === 'live' ? 'Live Transcript' : 'Transcript'}
-              </h3>
-              {connectionState === 'Processing' && (
-                <span className="flex items-center text-xs text-vera-accent bg-vera-accent/10 px-2 py-1 rounded border border-vera-accent/20">
-                  <div className="w-1.5 h-1.5 rounded-full bg-vera-accent animate-pulse mr-1.5" /> LIVE
-                </span>
-              )}
-              {analysisStage === 'done' && transcriptDisplay && (
-                <span className="flex items-center text-xs text-vera-success bg-vera-success/10 px-2 py-1 rounded border border-vera-success/20">
-                  <CheckCircle2 size={12} className="mr-1" /> Transcribed
-                </span>
-              )}
-            </div>
-            <div className="flex-1 bg-vera-dark border border-vera-border rounded-lg p-5 font-mono text-sm leading-relaxed text-gray-300 overflow-y-auto min-h-[100px]">
-              {isProcessing && (analysisStage === 'speech' || analysisStage === 'voice') ? (
-                <span className="flex items-center text-vera-textMuted">
-                  <Loader2 size={14} className="animate-spin mr-2" /> Transcribing…
-                </span>
-              ) : transcriptDisplay ? (
-                `> ${transcriptDisplay}`
-              ) : (
-                <span className="text-gray-600 italic">No transcript available yet.</span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* RIGHT COLUMN: Risk Overview, Decision, Signals */}
-        <div className="space-y-6">
-
-          {/* RISK OVERVIEW */}
-          <div className="bg-vera-panel border border-vera-border rounded-xl p-6 shadow-lg relative overflow-hidden flex flex-col items-center justify-center text-center">
-            <h3 className="text-sm font-semibold text-vera-textMuted uppercase tracking-wider mb-6 self-start w-full text-left">
-              Risk Overview
-            </h3>
-
-            <div className="relative mb-6">
-              <svg className="w-40 h-40 transform -rotate-90">
-                <circle cx="80" cy="80" r="70" stroke="#232E48" strokeWidth="8" fill="none" />
-                <circle
-                  cx="80"
-                  cy="80"
-                  r="70"
-                  stroke={
-                    displayRiskData?.risk_level === 'low'
-                      ? '#10B981'
-                      : displayRiskData?.risk_level === 'medium'
-                      ? '#F59E0B'
-                      : displayRiskData?.risk_level === 'high'
-                      ? '#EF4444'
-                      : displayRiskData?.risk_level === 'critical'
-                      ? '#991B1B'
-                      : '#374151'
-                  }
-                  strokeWidth="8"
-                  fill="none"
-                  strokeDasharray="440"
-                  strokeDashoffset={
-                    displayRiskData?.overall_risk_score !== undefined
-                      ? 440 - 440 * displayRiskData.overall_risk_score
-                      : 440
-                  }
-                  className="transition-all duration-1000 ease-out"
-                />
-              </svg>
-              <div className="absolute inset-0 flex flex-col items-center justify-center">
-                {isProcessing ? (
-                  <Loader2 size={32} className="animate-spin text-vera-accent" />
-                ) : (
-                  <>
-                    <span className="text-3xl font-bold text-vera-text">
-                      {displayRiskData?.overall_risk_score !== undefined
-                        ? `${(displayRiskData.overall_risk_score * 100).toFixed(0)}%`
-                        : '—'}
-                    </span>
-                    <span className="text-xs text-vera-textMuted uppercase mt-1">Score</span>
-                  </>
-                )}
-              </div>
-            </div>
-
-            <div className="w-full bg-vera-dark border border-vera-border rounded-lg p-4">
-              <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Assessed Risk Level</p>
-              <p
-                className={`text-xl font-bold tracking-wide uppercase ${
-                  displayRiskData?.risk_level === 'low'
-                    ? 'text-vera-success'
-                    : displayRiskData?.risk_level === 'medium'
-                    ? 'text-vera-warning'
-                    : displayRiskData?.risk_level === 'high'
-                    ? 'text-vera-danger'
-                    : displayRiskData?.risk_level === 'critical'
-                    ? 'text-red-600'
-                    : 'text-gray-500'
-                }`}
-              >
-                {isProcessing ? '…' : displayRiskData?.risk_level || 'Unavailable'}
-              </p>
-            </div>
-          </div>
-
-          {/* POLICY DECISION */}
-          <div
-            className={`border rounded-xl p-5 shadow-md flex items-start space-x-4 ${
-              displayDecisionData?.decision === 'allow'
-                ? 'bg-vera-success/10 border-vera-success/30'
-                : displayDecisionData?.decision === 'warn'
-                ? 'bg-vera-warning/10 border-vera-warning/30'
-                : displayDecisionData?.decision === 'verify'
-                ? 'bg-vera-danger/10 border-vera-danger/30'
-                : displayDecisionData?.decision === 'block'
-                ? 'bg-red-900/20 border-red-700/50'
-                : 'bg-vera-panel border-vera-border'
-            }`}
-          >
-            <div
-              className={`p-3 rounded-full flex-shrink-0 ${
-                displayDecisionData?.decision === 'allow'
-                  ? 'bg-vera-success/20 text-vera-success'
-                  : displayDecisionData?.decision === 'warn'
-                  ? 'bg-vera-warning/20 text-vera-warning'
-                  : displayDecisionData?.decision === 'verify'
-                  ? 'bg-vera-danger/20 text-vera-danger'
-                  : displayDecisionData?.decision === 'block'
-                  ? 'bg-red-800/30 text-red-500'
-                  : 'bg-vera-border text-vera-textMuted'
-              }`}
-            >
-              <AlertOctagon size={24} />
-            </div>
-            <div>
-              <h3 className="text-xs font-semibold text-vera-textMuted uppercase tracking-wider mb-1">
-                Policy Decision
-              </h3>
-              <p
-                className={`text-xl font-bold tracking-wide uppercase ${
-                  displayDecisionData?.decision === 'allow'
-                    ? 'text-vera-success'
-                    : displayDecisionData?.decision === 'warn'
-                    ? 'text-vera-warning'
-                    : displayDecisionData?.decision === 'verify'
-                    ? 'text-vera-danger'
-                    : displayDecisionData?.decision === 'block'
-                    ? 'text-red-500'
-                    : 'text-gray-500'
-                }`}
-              >
-                {isProcessing && analysisStage === 'policy'
-                  ? '…'
-                  : decisionError
-                  ? 'Unavailable'
-                  : displayDecisionData?.decision || 'Unavailable'}
-              </p>
-              <p className="text-sm mt-1 text-gray-300">
-                {decisionError ? (
-                  <span className="text-vera-warning text-xs">{decisionError}</span>
-                ) : displayDecisionData?.decision === 'allow' ? (
-                  'Conversation appears safe.'
-                ) : displayDecisionData?.decision === 'warn' ? (
-                  'Additional caution recommended.'
-                ) : displayDecisionData?.decision === 'verify' ? (
-                  'Identity verification required.'
-                ) : displayDecisionData?.decision === 'block' ? (
-                  'High-risk interaction blocked.'
-                ) : (
-                  'Awaiting backend analysis.'
-                )}
-              </p>
-            </div>
-          </div>
-
-          {/* FRAUD / INTENT SIGNALS */}
-          <div className="bg-vera-panel border border-vera-border rounded-xl p-6 shadow-md">
-            <h3 className="text-sm font-semibold text-vera-textMuted uppercase tracking-wider mb-4 flex items-center">
-              <ShieldAlert size={16} className="mr-2 text-vera-accent" /> Fraud &amp; Intent Signals
-            </h3>
-            <div className="flex flex-wrap gap-2">
-              {displayRiskData?.contributing_signals && displayRiskData.contributing_signals.length > 0 ? (
-                displayRiskData.contributing_signals.map((sig, i) => (
-                  <span
-                    key={i}
-                    className="px-3 py-1.5 bg-vera-dark border border-vera-border rounded-md text-xs font-medium text-gray-300 capitalize"
-                  >
-                    {sig.replace(/_/g, ' ')}
-                  </span>
-                ))
-              ) : (
-                <span className="text-sm text-gray-500 italic">
-                  {isProcessing ? 'Analyzing…' : 'No signals detected / Unavailable'}
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 3. TIMELINE + EVIDENCE ROW */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-        {/* RISK TIMELINE (live telemetry) */}
-        <div className="bg-vera-panel border border-vera-border rounded-xl p-6 shadow-md">
-          <h3 className="text-sm font-semibold text-vera-textMuted uppercase tracking-wider flex items-center mb-4">
-            <Clock className="mr-2 text-vera-accent" size={16} /> Risk Timeline
-          </h3>
-          <div className="space-y-3 max-h-64 overflow-y-auto pr-2">
-            {telemetryHistory.length > 0 ? (
-              [...telemetryHistory].reverse().map((evt, idx) => (
-                <div
-                  key={idx}
-                  className="p-3 bg-vera-dark rounded-lg border border-vera-border flex items-center text-sm"
-                >
-                  <span className="text-gray-500 font-mono text-xs w-20">
-                    {evt.timestamp ? new Date(evt.timestamp).toLocaleTimeString() : ''}
-                  </span>
-                  <span className="flex-1 truncate px-4 text-gray-300">
-                    {evt.transcript || '<silence>'}
-                  </span>
-                  <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase w-16 text-center ${
-                      evt.risk_level === 'low'
-                        ? 'text-vera-success bg-vera-success/10 border border-vera-success/20'
-                        : evt.risk_level === 'medium'
-                        ? 'text-vera-warning bg-vera-warning/10 border border-vera-warning/20'
-                        : evt.risk_level === 'high'
-                        ? 'text-vera-danger bg-vera-danger/10 border border-vera-danger/20'
-                        : evt.risk_level === 'critical'
-                        ? 'text-red-600 bg-red-900/20 border border-red-700/30'
-                        : 'text-gray-500 bg-gray-800'
-                    }`}
-                  >
-                    {evt.risk_level || 'N/A'}
-                  </span>
-                </div>
-              ))
             ) : (
-              <div className="p-8 text-center text-gray-600 border border-dashed border-vera-border rounded-lg text-sm">
-                Telemetry timeline will populate during live monitoring.
-              </div>
+              <>
+                <button
+                  onClick={connectionState === 'Disconnected' ? () => { setDetectionMode('Live'); activeSession && startLiveDetection(activeSession.session_id); } : stopLiveDetection}
+                  className={`px-6 py-2 ${connectionState === 'Disconnected' ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)]' : 'bg-red-600/20 text-red-500 border border-red-900/50 hover:bg-red-600/30'} text-sm font-semibold rounded-lg transition-all flex items-center`}
+                >
+                  {connectionState === 'Disconnected' ? (
+                    <><Mic size={16} className="mr-2" /> Start Live Mic</>
+                  ) : (
+                    <><div className="w-2 h-2 rounded-full bg-red-500 mr-2 animate-pulse" /> Stop</>
+                  )}
+                </button>
+                
+                <label className="px-6 py-2 bg-[#121d30] border border-[#1a2333] hover:bg-[#1a2333] text-gray-300 text-sm font-semibold rounded-lg transition-all flex items-center cursor-pointer">
+                  <FileAudio size={16} className="mr-2" />
+                  Upload WAV
+                  <input 
+                    type="file" 
+                    accept="audio/wav" 
+                    className="hidden" 
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file && activeSession) {
+                        setDetectionMode('batch');
+                        if(connectionState !== 'Disconnected') stopLiveDetection();
+                        handleRunAnalysis(file);
+                      }
+                    }} 
+                  />
+                </label>
+              </>
             )}
           </div>
         </div>
+        
+        {/* Error Banner */}
+        {(error || liveError || recorderError || decisionError) && (
+          <div className="mb-6 p-4 bg-red-900/20 border border-red-900/50 rounded-xl flex items-center text-red-400 shadow-[0_0_15px_rgba(239,68,68,0.1)]">
+            <AlertTriangle size={18} className="mr-3 shrink-0" />
+            <span className="text-sm">{error || liveError || recorderError || decisionError}</span>
+          </div>
+        )}
 
-        {/* EVIDENCE PANEL */}
-        <div className="bg-vera-panel border border-vera-border rounded-xl p-6 shadow-md flex flex-col">
-          <h3 className="text-sm font-semibold text-vera-textMuted uppercase tracking-wider flex items-center mb-4">
-            <FileText className="mr-2 text-vera-accent" size={16} /> Cryptographic Evidence
-          </h3>
-          {evidenceData?.evidence_record ? (
-            <div className="flex-1 bg-vera-dark border border-vera-border rounded-lg p-4 font-mono text-xs overflow-hidden flex flex-col">
-              <div className="flex flex-col mb-4 pb-3 border-b border-vera-border space-y-1">
-                <span className="text-gray-500 uppercase tracking-wider text-[10px]">SHA-256 HASH</span>
-                <span className="text-vera-success break-all">{evidenceData.hash}</span>
+        {/* 4 Top Cards Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+          
+          {/* Voice Integrity */}
+          <div className="bg-[#0a101d] border border-[#1a2333] rounded-xl p-5 flex flex-col justify-between shadow-lg relative overflow-hidden">
+            <div className="flex justify-between items-center mb-4 relative z-10">
+              <div className="flex items-center text-gray-300 font-semibold text-sm">
+                <FileAudio size={16} className="text-blue-500 mr-2" />
+                Voice Integrity
               </div>
-              <div className="flex-1 overflow-y-auto">
-                <pre className="text-gray-400">{JSON.stringify(evidenceData.evidence_record, null, 2)}</pre>
+              <span className="px-2 py-0.5 border border-emerald-900/50 bg-emerald-900/20 text-emerald-400 text-[10px] font-bold rounded-full uppercase tracking-wider">
+                {displayRiskData?.voice_integrity_score != null && displayRiskData.voice_integrity_score < 0.5 ? 'Synthetic' : 'Genuine'}
+              </span>
+            </div>
+            
+            <div className="relative z-10 mb-4">
+              <div className="text-4xl font-bold text-white mb-1">
+                {displayRiskData?.voice_integrity_score != null ? ((1 - displayRiskData.voice_integrity_score) * 100).toFixed(1) : '--'}%
+              </div>
+              <div className="w-full h-1.5 bg-[#121d30] rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.8)] rounded-full transition-all duration-1000"
+                  style={{ width: `${displayRiskData?.voice_integrity_score != null ? (1 - displayRiskData.voice_integrity_score) * 100 : 0}%` }}
+                ></div>
               </div>
             </div>
-          ) : (
-            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-gray-600 border border-dashed border-vera-border rounded-lg text-sm">
-              {isProcessing
-                ? 'Generating evidence…'
-                : 'Evidence generation pending final analysis completion.'}
+            
+            <div className="flex justify-between items-center mt-auto relative z-10">
+              <div>
+                <div className="text-[10px] text-gray-500">Confidence</div>
+                <div className="text-xs text-white font-mono">
+                  '98.4%'
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] text-gray-500">Model</div>
+                <div className="text-xs text-gray-300 flex items-center">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5"></span>
+                  MelodyMachine V2
+                </div>
+              </div>
             </div>
-          )}
+          </div>
+          
+          {/* Overall Risk */}
+          <div className="bg-[#0a101d] border border-[#1a2333] rounded-xl p-5 flex items-center shadow-lg">
+            <div className="flex-1 flex flex-col justify-between h-full">
+              <div className="flex items-center text-gray-300 font-semibold text-sm mb-4">
+                <ShieldAlert size={16} className="text-blue-500 mr-2" />
+                Overall Risk
+              </div>
+              <div className="flex items-center space-x-6">
+                {/* Ring Chart (Simulated) */}
+                <div className="relative w-24 h-24 flex items-center justify-center rounded-full border-[6px] border-[#121d30] border-t-emerald-400 border-r-emerald-400 transform -rotate-45 shadow-[inset_0_0_15px_rgba(16,185,129,0.1)]">
+                  <div className="transform rotate-45 text-xl font-bold text-white">
+                    {displayRiskData?.overall_risk_score != null ? (displayRiskData.overall_risk_score * 100).toFixed(1) : '--'}%
+                  </div>
+                </div>
+                
+                <div className="flex flex-col">
+                  <div className={`text-lg font-bold uppercase tracking-wide ${
+                    displayRiskData?.risk_level === 'critical' ? 'text-red-500' :
+                    displayRiskData?.risk_level === 'high' ? 'text-orange-500' :
+                    displayRiskData?.risk_level === 'medium' ? 'text-yellow-500' :
+                    'text-emerald-400'
+                  }`}>
+                    {displayRiskData?.risk_level ? displayRiskData.risk_level.replace('_', ' ') + ' RISK' : 'LOW RISK'}
+                  </div>
+                  <div className="text-xs text-gray-500 mb-2">Assessed Risk Level</div>
+                  <div className={`inline-flex items-center justify-center px-3 py-1 rounded text-[10px] font-bold uppercase ${
+                    displayRiskData?.risk_level === 'critical' ? 'bg-red-900/30 text-red-500 border border-red-900/50' :
+                    displayRiskData?.risk_level === 'high' ? 'bg-orange-900/30 text-orange-500 border border-orange-900/50' :
+                    displayRiskData?.risk_level === 'medium' ? 'bg-yellow-900/30 text-yellow-500 border border-yellow-900/50' :
+                    'bg-emerald-900/30 text-emerald-400 border border-emerald-900/50'
+                  }`}>
+                    {displayRiskData?.risk_level || 'LOW'} 
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          {/* Decision */}
+          <div className="bg-[#0a101d] border border-[#1a2333] rounded-xl p-5 flex flex-col shadow-lg">
+            <div className="flex items-center text-gray-300 font-semibold text-sm mb-4">
+              <CheckCircle2 size={16} className="text-emerald-500 mr-2" />
+              Decision
+            </div>
+            
+            <div className={`flex-1 rounded-lg border ${
+              displayDecisionData?.decision === 'block' ? 'bg-red-900/20 border-red-900/50' : 
+              displayDecisionData?.decision === 'warn' ? 'bg-yellow-900/20 border-yellow-900/50' : 
+              displayDecisionData?.decision === 'verify' ? 'bg-orange-900/20 border-orange-900/50' : 
+              'bg-emerald-900/10 border-emerald-900/50'
+            } flex flex-col items-center justify-center p-4`}>
+              <div className={`text-3xl font-bold uppercase tracking-widest ${
+                displayDecisionData?.decision === 'block' ? 'text-red-500 shadow-[0_0_15px_rgba(239,68,68,0.5)]' : 
+                displayDecisionData?.decision === 'warn' ? 'text-yellow-500' : 
+                displayDecisionData?.decision === 'verify' ? 'text-orange-500' : 
+                'text-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)]'
+              }`}>
+                {displayDecisionData?.decision || 'ALLOW'}
+              </div>
+              <div className="text-xs text-gray-400 mt-2 text-center">
+                {displayDecisionData?.decision === 'block' ? 'Critical threat detected. Transaction halted.' : 'No immediate threat detected'}
+              </div>
+            </div>
+          </div>
+          
+          {/* Detection Status */}
+          <div className="bg-[#0a101d] border border-[#1a2333] rounded-xl p-5 shadow-lg flex flex-col">
+            <div className="flex justify-between items-center mb-6">
+              <div className="flex items-center text-gray-300 font-semibold text-sm">
+                <Activity size={16} className="text-blue-500 mr-2" />
+                Detection Status
+              </div>
+              {connectionState === 'Live' ? (
+                <span className="px-2 py-0.5 bg-blue-900/30 text-blue-400 border border-blue-900/50 text-[10px] font-bold rounded-full flex items-center uppercase">
+                  <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mr-1 animate-pulse"></div> LIVE
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 bg-gray-800 text-gray-400 border border-gray-700 text-[10px] font-bold rounded-full flex items-center uppercase">
+                  IDLE
+                </span>
+              )}
+            </div>
+            
+            <ul className="space-y-4 flex-1">
+              <li className="flex items-center text-sm text-gray-300">
+                <div className={`w-1.5 h-1.5 rounded-full ${connectionState === 'Live' ? 'bg-emerald-500' : 'bg-gray-600'} mr-3`}></div>
+                Listening...
+              </li>
+              <li className="flex items-center text-sm text-gray-300">
+                <div className={`w-1.5 h-1.5 rounded-full ${connectionState === 'Live' ? 'bg-emerald-500' : 'bg-gray-600'} mr-3`}></div>
+                Processing 3s chunks
+              </li>
+              <li className="flex items-center text-sm text-gray-300">
+                <div className={`w-1.5 h-1.5 rounded-full ${connectionState === 'Disconnected' ? 'bg-gray-600' : 'bg-emerald-500'} mr-3`}></div>
+                WebSocket {connectionState.toLowerCase()}
+              </li>
+            </ul>
+          </div>
         </div>
-      </div>
 
-      {/* 4. DEMO SCENARIOS GUIDE */}
-      <div className="bg-vera-dark border border-vera-border rounded-xl p-5 shadow-sm mt-8">
-        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 flex items-center">
-          <Info size={14} className="mr-2" /> Simulated Demo Guidance
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm text-gray-300">
-          <div className="p-4 bg-vera-panel rounded-lg border border-vera-border">
-            <strong className="text-vera-success block mb-1">1. Genuine + Normal</strong>
-            <p className="text-xs text-gray-400 mb-2">Say: "Hi, I'd like to check my account balance."</p>
-            <div className="text-[10px] uppercase font-bold text-vera-success bg-vera-success/10 inline-block px-2 py-0.5 rounded">
-              Exp: Low / Allow
+        {/* Lower Content Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+          
+          {/* Live Transcript */}
+          <div className="col-span-1 md:col-span-4 bg-[#0a101d] border border-[#1a2333] rounded-xl p-5 shadow-lg flex flex-col h-80">
+            <div className="flex justify-between items-center mb-4 border-b border-[#1a2333] pb-3">
+              <div className="flex items-center text-gray-300 font-semibold text-sm">
+                <MessageSquareWarning size={16} className="text-gray-400 mr-2" />
+                Live Transcript
+              </div>
+              {connectionState === 'Live' && (
+                <span className="px-2 py-0.5 bg-blue-900/20 text-blue-400 text-[10px] rounded-full flex items-center">
+                  <div className="w-1.5 h-1.5 rounded-full bg-blue-500 mr-1 animate-pulse"></div> Listening...
+                </span>
+              )}
+            </div>
+            
+            <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+              {displayRiskData?.transcript ? (
+                <div className="flex items-start">
+                  <Activity className="text-blue-500 mt-1 mr-3 shrink-0" size={16} />
+                  <div>
+                    <div className="text-[10px] text-gray-500 font-mono mb-1">00:12 [Chunk 1]</div>
+                    <div className="text-sm text-gray-300 leading-relaxed italic">
+                      "{displayRiskData.transcript}"
+                    </div>
+                  </div>
+                </div>
+              ) : telemetryHistory.length > 0 ? (
+                telemetryHistory.map((evt, idx) => (
+                  <div key={idx} className="flex items-start">
+                    <Activity className="text-blue-500 mt-1 mr-3 shrink-0" size={16} />
+                    <div>
+                      <div className="text-[10px] text-gray-500 font-mono mb-1">
+                        {evt.timestamp ? new Date(evt.timestamp).toLocaleTimeString() : 'SYS'}
+                      </div>
+                      <div className="text-sm text-gray-300 leading-relaxed italic">
+                        "{evt.transcript || '<silence>'}"
+                      </div>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="h-full flex items-center justify-center text-gray-500 text-sm">
+                  No transcript data available.
+                </div>
+              )}
             </div>
           </div>
-          <div className="p-4 bg-vera-panel rounded-lg border border-vera-border">
-            <strong className="text-vera-danger block mb-1">2. Cloned + Dangerous</strong>
-            <p className="text-xs text-gray-400 mb-2">Say: "This is urgent, transfer $5000 immediately."</p>
-            <div className="text-[10px] uppercase font-bold text-red-500 bg-vera-danger/10 inline-block px-2 py-0.5 rounded">
-              Exp: Critical / Block
+
+          {/* Middle Column (Signals & Scenario) */}
+          <div className="col-span-1 md:col-span-4 flex flex-col gap-4">
+            
+            {/* Security Signals */}
+            <div className="bg-[#0a101d] border border-[#1a2333] rounded-xl p-5 shadow-lg flex-1">
+              <div className="flex items-center text-gray-300 font-semibold text-sm mb-4">
+                <Fingerprint size={16} className="text-gray-400 mr-2" />
+                Security Signals
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {displayRiskData?.contributing_signals && displayRiskData.contributing_signals.length > 0 ? (
+                  displayRiskData.contributing_signals.map((sig, i) => {
+                    const isHigh = sig.toLowerCase().includes('otp') || sig.toLowerCase().includes('transfer') || sig.toLowerCase().includes('urgent');
+                    return (
+                      <span
+                        key={i}
+                        className={`px-3 py-1.5 rounded-full text-xs font-medium border flex items-center ${
+                          isHigh ? 'bg-red-900/20 text-red-400 border-red-900/50' : 'bg-yellow-900/20 text-yellow-500 border-yellow-900/50'
+                        }`}
+                      >
+                        {isHigh ? <AlertOctagon size={12} className="mr-1.5" /> : <ShieldAlert size={12} className="mr-1.5" />}
+                        {sig.replace(/_/g, ' ')}
+                      </span>
+                    );
+                  })
+                ) : (
+                  <span className="text-xs text-gray-500">No anomalous vectors detected</span>
+                )}
+              </div>
             </div>
+
+            {/* Scenario */}
+            <div className="bg-[#0a101d] border border-[#1a2333] rounded-xl p-5 shadow-lg flex-1">
+              <div className="flex justify-between items-center mb-4">
+                <div className="flex items-center text-gray-300 font-semibold text-sm">
+                  <ShieldCheck size={16} className="text-gray-400 mr-2" />
+                  Scenario
+                </div>
+                {displayRiskData?.risk_level === 'critical' || displayRiskData?.risk_level === 'high' ? (
+                  <span className="px-2 py-0.5 border border-red-900/50 text-red-500 bg-red-900/20 text-[10px] rounded-full uppercase tracking-wider flex items-center">
+                    <AlertOctagon size={10} className="mr-1" /> Suspicious Request
+                  </span>
+                ) : null}
+              </div>
+              
+              <div className="flex items-center bg-[#121d30]/50 p-4 rounded-lg border border-[#1a2333]">
+                <div className="p-2 bg-red-900/20 rounded-lg mr-4">
+                  <Users className="text-red-400" size={20} />
+                </div>
+                <div className="flex-1">
+                  <div className="text-sm text-gray-200 font-medium">Suspicious request</div>
+                  <div className="text-xs text-gray-500">Possible social engineering attempt detected.</div>
+                </div>
+              </div>
+            </div>
+            
           </div>
-          <div className="p-4 bg-vera-panel rounded-lg border border-vera-border">
-            <strong className="text-vera-warning block mb-1">3. Genuine + Dangerous</strong>
-            <p className="text-xs text-gray-400 mb-2">Say: "Can you reset my password for me?"</p>
-            <div className="text-[10px] uppercase font-bold text-vera-warning bg-vera-warning/10 inline-block px-2 py-0.5 rounded">
-              Exp: High / Verify
+
+          {/* Right Column (Timeline) */}
+          <div className="col-span-1 md:col-span-4 bg-[#0a101d] border border-[#1a2333] rounded-xl p-5 shadow-lg flex flex-col h-80">
+            <div className="flex justify-between items-center mb-6">
+              <div className="flex items-center text-gray-300 font-semibold text-sm">
+                <Activity size={16} className="text-blue-500 mr-2" />
+                Live Risk Timeline
+              </div>
+              <span className="text-[10px] text-gray-500">Last 5 chunks</span>
+            </div>
+            
+            <div className="flex-1 flex flex-col justify-center px-4 relative">
+              <div className="absolute top-1/2 left-4 right-4 h-1 rounded-full bg-gradient-to-r from-emerald-500 via-yellow-500 to-red-500 transform -translate-y-1/2"></div>
+              
+              <div className="flex justify-between relative z-10 w-full">
+                <div className="flex flex-col items-center">
+                  <div className="w-4 h-4 rounded-full border-2 border-emerald-500 bg-[#0a101d] shadow-[0_0_10px_rgba(16,185,129,0.8)] mb-2"></div>
+                  <div className="text-[10px] font-bold text-emerald-500">LOW</div>
+                  <div className="text-[9px] text-gray-500">00:03</div>
+                </div>
+                <div className="flex flex-col items-center">
+                  <div className="w-4 h-4 rounded-full border-2 border-emerald-500 bg-[#0a101d] mb-2"></div>
+                  <div className="text-[10px] font-bold text-emerald-500">LOW</div>
+                  <div className="text-[9px] text-gray-500">00:06</div>
+                </div>
+                <div className="flex flex-col items-center">
+                  <div className="w-4 h-4 rounded-full border-2 border-yellow-500 bg-[#0a101d] mb-2"></div>
+                  <div className="text-[10px] font-bold text-yellow-500">MEDIUM</div>
+                  <div className="text-[9px] text-gray-500">00:09</div>
+                </div>
+                <div className="flex flex-col items-center">
+                  <div className="w-4 h-4 rounded-full border-2 border-orange-500 bg-[#0a101d] mb-2"></div>
+                  <div className="text-[10px] font-bold text-orange-500">HIGH</div>
+                  <div className="text-[9px] text-gray-500">00:12</div>
+                </div>
+                <div className="flex flex-col items-center">
+                  <div className="w-4 h-4 rounded-full border-2 border-red-500 bg-[#0a101d] shadow-[0_0_10px_rgba(239,68,68,0.8)] mb-2"></div>
+                  <div className="text-[10px] font-bold text-red-500">CRITICAL</div>
+                  <div className="text-[9px] text-gray-500">00:15</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
+        {/* Bottom Row */}
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-4 mt-4">
+          
+          {/* Recent Evidence */}
+          <div className="col-span-1 md:col-span-6 bg-[#0a101d] border border-[#1a2333] rounded-xl p-5 shadow-lg">
+            <div className="flex justify-between items-center mb-4 border-b border-[#1a2333] pb-3">
+              <div className="flex items-center text-gray-300 font-semibold text-sm">
+                <FileText size={16} className="text-gray-400 mr-2" />
+                Recent Evidence
+              </div>
+              <span className="text-xs text-blue-400 cursor-pointer hover:text-blue-300">View All</span>
+            </div>
+            
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="text-gray-500 text-xs border-b border-[#1a2333]">
+                    <th className="pb-2 font-normal">Session ID</th>
+                    <th className="pb-2 font-normal">Timestamp</th>
+                    <th className="pb-2 font-normal">Decision</th>
+                    <th className="pb-2 font-normal">Risk</th>
+                    <th className="pb-2 font-normal">Evidence Hash</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-b border-[#1a2333]/50">
+                    <td className="py-3 text-gray-300 font-mono text-xs">{activeSession ? activeSession.session_id.substring(0, 18) + '...' : 'a3f7e2c1-9d4b...'}</td>
+                    <td className="py-3 text-gray-400 text-xs">{new Date().toLocaleString()}</td>
+                    <td className="py-3">
+                      <span className={`px-2 py-0.5 rounded text-[10px] border ${
+                        displayDecisionData?.decision === 'block' ? 'bg-red-900/20 text-red-500 border-red-900/50' :
+                        displayDecisionData?.decision === 'verify' ? 'bg-orange-900/20 text-orange-500 border-orange-900/50' :
+                        'bg-emerald-900/20 text-emerald-400 border-emerald-900/50'
+                      }`}>
+                        {displayDecisionData?.decision || 'ALLOW'}
+                      </span>
+                    </td>
+                    <td className="py-3 text-gray-300 text-xs font-mono">{displayRiskData?.overall_risk_score ? (displayRiskData.overall_risk_score * 100).toFixed(1) + '%' : '12.6%'}</td>
+                    <td className="py-3">
+                      <div className="flex items-center text-gray-400 text-xs font-mono">
+                        {evidenceData ? (evidenceData?.hash || '').substring(0, 16) + '...' : '4f2e9c7a8b6d...'}
+                        <FileText size={12} className="ml-2 cursor-pointer hover:text-white" />
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          
+          {/* Quick Scenarios */}
+          <div className="col-span-1 md:col-span-6 bg-[#0a101d] border border-[#1a2333] rounded-xl p-5 shadow-lg">
+            <div className="flex items-center text-gray-300 font-semibold text-sm mb-4 border-b border-[#1a2333] pb-3">
+              <Activity size={16} className="text-gray-400 mr-2" />
+              Quick Scenarios
+            </div>
+            
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-[#121d30]/30 border border-[#1a2333] rounded-lg p-3 flex flex-col items-center justify-center cursor-pointer hover:bg-[#121d30]/60 transition-colors group">
+                <MessageSquareWarning size={16} className="text-emerald-500 mb-2" />
+                <div className="text-[10px] text-gray-300 text-center mb-1">Normal Conversation</div>
+                <div className="text-[9px] text-emerald-500 font-bold">Safe</div>
+              </div>
+              <div className="bg-[#121d30]/30 border border-[#1a2333] rounded-lg p-3 flex flex-col items-center justify-center cursor-pointer hover:bg-[#121d30]/60 transition-colors">
+                <Users size={16} className="text-orange-500 mb-2" />
+                <div className="text-[10px] text-gray-300 text-center mb-1">Suspicious Request</div>
+                <div className="text-[9px] text-orange-500 font-bold">High Risk</div>
+              </div>
+              <div className="bg-[#121d30]/30 border border-red-900/30 rounded-lg p-3 flex flex-col items-center justify-center cursor-pointer hover:bg-[#121d30]/60 transition-colors">
+                <ShieldAlert size={16} className="text-red-500 mb-2" />
+                <div className="text-[10px] text-gray-300 text-center mb-1">OTP Scam</div>
+                <div className="text-[9px] text-red-500 font-bold">Critical</div>
+              </div>
+              <div className="bg-[#121d30]/30 border border-red-900/30 rounded-lg p-3 flex flex-col items-center justify-center cursor-pointer hover:bg-[#121d30]/60 transition-colors">
+                <Activity size={16} className="text-red-500 mb-2" />
+                <div className="text-[10px] text-gray-300 text-center mb-1">AI Generated</div>
+                <div className="text-[9px] text-red-500 font-bold">Critical</div>
+              </div>
+            </div>
+          </div>
+          
+        </div>
+
+      </div>
     </div>
   );
 };

@@ -8,15 +8,15 @@ from tests.test_audio import create_dummy_wav
 client = TestClient(app)
 
 @patch("app.services.voice_integrity_service.analyze_voice")
-@patch("app.services.speaker_verification_service.compare_embeddings")
-@patch("app.services.speaker_verification_service.extract_embedding")
+
+
 @patch("app.services.asr_service.transcribe_audio")
-def test_e2e_unknown_caller(mock_transcribe, mock_extract, mock_compare, mock_analyze):
+def test_e2e_unknown_caller(mock_transcribe, mock_analyze):
     # Mock ML
     mock_analyze.return_value = {"voice_integrity_score": 0.1, "label": "genuine", "confidence": 0.9}
-    import numpy as np
-    mock_extract.return_value = np.zeros((1, 256), dtype=np.float32)
-    mock_compare.return_value = {"speaker_similarity_score": 0.0, "match": False, "confidence": 0.0}
+    
+    
+    
     mock_transcribe.return_value = {"transcript": "can you hear me?", "language": "en"}
     
     # 1. Create session
@@ -89,15 +89,15 @@ def test_e2e_unknown_caller(mock_transcribe, mock_extract, mock_compare, mock_an
             assert data["risk_level"] == "low"
 
 @patch("app.services.voice_integrity_service.analyze_voice")
-@patch("app.services.speaker_verification_service.compare_embeddings")
-@patch("app.services.speaker_verification_service.extract_embedding")
+
+
 @patch("app.services.asr_service.transcribe_audio")
-def test_e2e_known_caller_critical(mock_transcribe, mock_extract, mock_compare, mock_analyze):
+def test_e2e_known_caller_critical(mock_transcribe, mock_analyze):
     # Mock ML
     mock_analyze.return_value = {"voice_integrity_score": 0.9, "label": "fake", "confidence": 0.9} # Deepfake!
-    import numpy as np
-    mock_extract.return_value = np.zeros((1, 256), dtype=np.float32)
-    mock_compare.return_value = {"speaker_similarity_score": 0.1, "match": False, "confidence": 0.9} # Doesn't match!
+    
+    
+    
     mock_transcribe.return_value = {"transcript": "urgent send the otp pin now", "language": "en"} # Urgent action!
     
     # 1. Create Voice Profile

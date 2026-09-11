@@ -42,9 +42,10 @@ def analyze_voice(audio_array: np.ndarray, sample_rate: int = 16000) -> dict:
         logits = model(**inputs).logits
         probs = torch.softmax(logits, dim=-1)
         
-    # 0 = fake, 1 = real
-    fake_prob = float(probs[0, 0].item())
-    real_prob = float(probs[0, 1].item())
+    # The model actually outputs 0 = real (genuine) and 1 = fake (synthetic)
+    # despite config.id2label suggesting otherwise.
+    real_prob = float(probs[0, 0].item())
+    fake_prob = float(probs[0, 1].item())
     
     is_fake = fake_prob >= 0.5
     label = "synthetic" if is_fake else "genuine"

@@ -46,3 +46,44 @@ def test_verify_voice_invalid_session():
     
     resp = client.post("/api/v1/sessions/invalid-session/verify", files=files)
     assert resp.status_code == 404
+
+import numpy as np
+import torch
+from unittest.mock import patch, MagicMock
+from app.services.voice_integrity_service import analyze_voice
+
+def test_analyze_voice_mapping_genuine():
+    with patch('app.services.voice_integrity_service.get_model') as mock_get_model:
+        mock_extractor = MagicMock(return_value={'input_values': torch.tensor([[0.0]])})
+        
+        mock_model = MagicMock()
+        mock_logits = torch.tensor([[5.0, -5.0]]) # [0]=high (real), [1]=low (fake)
+        mock_model.return_value.logits = mock_logits
+        
+        mock_device = torch.device('cpu')
+        mock_get_model.return_value = (mock_extractor, mock_model, mock_device)
+        
+        audio = np.zeros(16000, dtype=np.float32)
+        result = analyze_voice(audio, 16000)
+        
+        assert result['label'] == 'genuine'
+        assert result['voice_integrity_score'] < 0.5
+        assert result['confidence'] > 0.9
+
+def test_analyze_voice_mapping_synthetic():
+    with patch('app.services.voice_integrity_service.get_model') as mock_get_model:
+        mock_extractor = MagicMock(return_value={'input_values': torch.tensor([[0.0]])})
+        
+        mock_model = MagicMock()
+        mock_logits = torch.tensor([[-5.0, 5.0]]) # [0]=low (real), [1]=high (fake)
+        mock_model.return_value.logits = mock_logits
+        
+        mock_device = torch.device('cpu')
+        mock_get_model.return_value = (mock_extractor, mock_model, mock_device)
+        
+        audio = np.zeros(16000, dtype=np.float32)
+        result = analyze_voice(audio, 16000)
+        
+        assert result['label'] == 'synthetic'
+        assert result['voice_integrity_score'] > 0.5
+        assert result['confidence'] > 0.9

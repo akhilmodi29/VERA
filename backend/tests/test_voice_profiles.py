@@ -46,23 +46,3 @@ def test_get_voice_profile():
     assert resp2_data["profile_id"] == profile_id
     assert resp2_data["user_id"] == "user_123"
     assert "embedding" not in resp2_data # Ensure raw embedding isn't leaked
-
-@patch("app.services.speaker_verification_service.extract_embedding")
-def test_compare_audio_to_profile(mock_extract):
-    mock_extract.return_value = np.random.rand(1, 512).astype(np.float32)
-    
-    # Needs a db session. We can just test via the service layer
-    from app.services.voice_profile_service import enroll_profile, compare_audio_to_profile
-    from app.db.database import SessionLocal
-    
-    db = SessionLocal()
-    try:
-        audio_array = np.zeros(16000, dtype=np.float32)
-        profile = enroll_profile(db, "user_456", audio_array)
-        
-        result = compare_audio_to_profile(db, profile.profile_id, audio_array)
-        assert "match" in result
-        assert "speaker_similarity_score" in result
-        assert result["model_name"] == "anton-l/wav2vec2-base-superb-sv"
-    finally:
-        db.close()

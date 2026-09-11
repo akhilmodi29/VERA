@@ -31,15 +31,3 @@ def enroll_profile(db: Session, user_id: str, audio_array: np.ndarray, sample_ra
 
 def get_profile(db: Session, profile_id: str) -> VoiceProfileModel:
     return db.query(VoiceProfileModel).filter(VoiceProfileModel.profile_id == profile_id).first()
-
-def compare_audio_to_profile(db: Session, profile_id: str, audio_array: np.ndarray, sample_rate: int = 16000) -> dict:
-    profile = get_profile(db, profile_id)
-    if not profile:
-        raise ValueError("Profile not found")
-        
-    # Reconstruct the embedding array
-    stored_embedding = np.frombuffer(profile.embedding, dtype=np.float32).reshape(1, -1)
-    
-    new_embedding = speaker_verification_service.extract_embedding(audio_array, sample_rate)
-    
-    return speaker_verification_service.compare_embeddings(stored_embedding, new_embedding)
